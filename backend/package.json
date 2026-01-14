@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "an edtech platform",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start:dev": "cross-env NODE_ENV=development nodemon server.js",
     "start:prod": "cross-env NODE_ENV=production nodemon server.js",
@@ -11,6 +12,7 @@
   "author": "\"aakash, ojas\"",
   "license": "ISC",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
@@ -18,5 +20,8 @@
     "morgan": "^1.10.1",
     "nodemailer": "^7.0.12",
     "validator": "^13.15.26"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
   }
 }
