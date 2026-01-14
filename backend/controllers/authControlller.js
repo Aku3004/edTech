@@ -1,15 +1,14 @@
 import User from "../models/userModel.js";
 import { sendVerificationEmail } from "../services/verificationEmail.js";
-import { resetPasswordEmail } from "../services/resetPasswordEmail.js";
+import resetPasswordEmail from "../services/resetPasswordEmail.js";
 import AppError from "../utils/appError.js";
 import catchAsync from "../utils/asyncHandler.js"
 import crypto from "crypto";
+import {OAuth2Client} from "google-auth-library";
 import { generateAccessToken,generateRefreshToken } from "../utils/token.js";
 
 
-const client=new OAuthClient(process.env.GOOGLE_CLIENT_ID);
-
-
+const client=new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 export const signup=catchAsync(async(req,res,next)=>{
@@ -24,15 +23,15 @@ export const signup=catchAsync(async(req,res,next)=>{
      });
 
      const token=await user.generateEmailVerificationToken();
-     await user.save({validateBeforeSave:false});
+     await user.save();
 
      const verificationURL=`${req.protocol}://${req.get("host")}/api/v1/auth/verify-email/${token}`;
 
      await sendVerificationEmail(user.email,verificationURL);
 
-     res.status(200).json({
-        staus:"success",
-        message:"user created successfully"
+     res.status(201).json({
+        status:"success",
+        message:"user created successfully. Please verify your email."
      })
 
 });
@@ -69,10 +68,10 @@ export const resendVerificationEmail=catchAsync(async(req,res,next)=>{
     })
 
 export const verifyEmail=catchAsync(async(req,res,next)=>{
-    const {token}=req.params.token;
+    const token=req.params.token;
 
     if(!token){
-        return next(new APPError("Invalid verification link",400));
+        return next(new AppError("Invalid verification link",400));
     }
 
     const hashedToken=crypto
@@ -80,7 +79,7 @@ export const verifyEmail=catchAsync(async(req,res,next)=>{
         .update(token)
         .digest("hex");
 
-    const user=User.findOne({
+    const user=await User.findOne({
         emailVerificationToken:hashedToken,
         emailVerificationExpiry:{$gt:Date.now()}
     });
@@ -104,7 +103,7 @@ export const verifyEmail=catchAsync(async(req,res,next)=>{
 
 
 
-export const login=catchAsync(async(req,res)=>{
+export const login=catchAsync(async(req,res,next)=>{
 
     const {email,password}=req.body;
 
@@ -114,12 +113,16 @@ export const login=catchAsync(async(req,res)=>{
 
     const user=await User.findOne({email}).select("+passwordHash +refreshToken");
 
-    if(!user || await(user.comparePassword(password))){
+    if(!user || !(await user.comparePassword(password))){
         return next(new AppError("Invalid email or password",401));
     }
 
     if(!user.isEmailVerified){
         return next(new AppError("Please verify your email before logging in",401));
+    }
+
+    if(user.authProvider!=="local"){
+        return next(new AppError("Please log in using Google",400));
     }
 
     const accessToken=generateAccessToken(user);
@@ -128,17 +131,23 @@ export const login=catchAsync(async(req,res)=>{
     user.refreshToken=refreshToken;
     await user.save({validateBeforeSave:false});
 
+
+
     res.status(200).json({
         status:"success",
         accessToken,
-        user:{
-            user
-        }
+        refreshToken,
+            user:{
+                id:user._id,
+                email:user.email,
+                role:user.role
+            }
+        
     });
 
 })
 
-export const forgotPassword=catchAsync(async(req,res)=>{
+export const forgotPassword=catchAsync(async(req,res,next)=>{
     const {email}=req.body;
 
     if(!email){
@@ -166,7 +175,7 @@ export const forgotPassword=catchAsync(async(req,res)=>{
 })
 
 
-export const resetPassword=catchAsync(async(req,res)=>{
+export const resetPassword=catchAsync(async(req,res,next)=>{
     const {token}=req.params;
     const {password}=req.body;
 
@@ -180,7 +189,7 @@ export const resetPassword=catchAsync(async(req,res)=>{
          .digest('hex');
 
 
-    const user=await user.findOne({
+    const user=await User.findOne({
         passwordResetToken:hashedToken,
         passwordResetExpiry:{$gt:Date.now()}
     });
@@ -192,6 +201,7 @@ export const resetPassword=catchAsync(async(req,res)=>{
     user.passwordHash=password;
     user.passwordResetToken=undefined;
     user.passwordResetExpiry=undefined;
+    user.refreshToken=undefined;
 
     await user.save();
 
@@ -201,7 +211,7 @@ export const resetPassword=catchAsync(async(req,res)=>{
 })
 
 
-const googleAuth=catchAsync(async(req,res,next)=>{
+export const googleAuth=catchAsync(async(req,res,next)=>{
      const {idToken}=req.body;
 
      if(!idToken){
@@ -213,7 +223,7 @@ const googleAuth=catchAsync(async(req,res,next)=>{
         audience:process.env.GOOGLE_CLIENT_ID
      });
 
-     const payload=ticket.getPayLoad();
+     const payload=ticket.getPayload();
 
      const {
         sub:googleId,
@@ -224,10 +234,10 @@ const googleAuth=catchAsync(async(req,res,next)=>{
      }=payload;
 
      if(!email_verified){
-        return next(new AppError("Google email no verified",400));
+        return next(new AppError("Google email is not verified",400));
      }
 
-     let user=await user.findone({
+     let user=await User.findOne({
         $or:[{googleId},{email}]
      });
 
@@ -236,14 +246,20 @@ const googleAuth=catchAsync(async(req,res,next)=>{
             email,
             googleId,
             authProvider:"google",
-            isEmailVerified:true
+            isEmailVerified:true,
+            role:"student"
         });
      }
 
-     const token=signJWT(user._id,user.role);
+    const accessToken=generateAccessToken(user);
+    const refreshToken=generateRefreshToken();
+
+    user.refreshToken=refreshToken;
+    await user.save({validateBeforeSave:false});
 
      res.status(200).json({
-        token,
+        accessToken,
+        refreshToken,
         user:{
             id:user._id,
             email:user.email,
@@ -261,7 +277,7 @@ export const logout=catchAsync(async(req,res,next)=>{
     await user.save({validateBeforeSave:false});
 
     res.status(200).json({
-        message:"Loged out successfully"
+        message:"Logged out successfully"
     });
 });
 

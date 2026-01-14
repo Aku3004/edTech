@@ -10,7 +10,7 @@ app.use(express.json());
 app.use(morgan('dev'));
 
 
-app.use('/api/v1/auth',userRouter);
+app.use('/api/v1/auth',authRouter);
 
 app.use((req,res,next)=>{
      next(new APPError(`can't find ${req.originalUrl} on this server!`,404));

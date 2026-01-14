@@ -1,7 +1,7 @@
 import transporter from "./transporter.js"
 
 
-export const resetPasswordEmail=async(email,url)=>{
+ const resetPasswordEmail=async(email,url)=>{
     try{
         await transporter.sendMail({
         from:"Edtech Support <gangwani.aakash30@gmail.com>",
@@ -15,3 +15,5 @@ export const resetPasswordEmail=async(email,url)=>{
     }
    
 };
+
+export default resetPasswordEmail;
