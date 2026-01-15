@@ -6,6 +6,8 @@ import catchAsync from "../utils/asyncHandler.js"
 import crypto from "crypto";
 import {OAuth2Client} from "google-auth-library";
 import { generateAccessToken,generateRefreshToken } from "../utils/token.js";
+import {COOLDOWN_MS,MAX_DEVICE} from "../config/constant.js";
+
 
 
 const client=new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -13,9 +15,27 @@ const client=new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 export const signup=catchAsync(async(req,res,next)=>{
     const {email,password}=req.body;
+    // one of the or both fields left blank
      if(!email || ! password){
         return next(new AppError("Email and Password are required",400));
      }
+     
+    const existingUser=await User.findOne({email});
+    // signup but not verified
+    if(existingUser && !existingUser.isEmailVerified){
+        return res.status(409).json({
+            status:"pending_verification",
+            message:"Account already exists.Please verify your email."
+        })
+    }
+    // already verified user
+    if(existingUser && existingUser.isEmailVerified){
+        return res.status(409).json({
+            status:"error",
+            message:"An account with this email already exists. Please login."
+        });
+    }
+
      const user=await User.create({
         email,
         passwordHash:password,
@@ -23,7 +43,8 @@ export const signup=catchAsync(async(req,res,next)=>{
      });
 
      const token=await user.generateEmailVerificationToken();
-     await user.save();
+     user.emailVerificationLastSentAt=Date.now();
+     await user.save({ validateBeforeSave: false });
 
      const verificationURL=`${req.protocol}://${req.get("host")}/api/v1/auth/verify-email/${token}`;
 
@@ -41,9 +62,13 @@ export const resendVerificationEmail=catchAsync(async(req,res,next)=>{
 
     const {email}=req.body;
 
-    if(!email) return next(new AppError('Email is Required',400));
+    // if email not provided
+
+    if(!email) return next(new AppError('Email is required',400));
 
     const user=await User.findOne({email});
+
+    // if user doesn't exist
 
     if(!user){
         return res.status(200).json({
@@ -51,11 +76,18 @@ export const resendVerificationEmail=catchAsync(async(req,res,next)=>{
     });
 }
 
+   // already verified
    if(user.isEmailVerified){
     return next(new AppError('Email is already verified',400));
    }
 
+   if(user.emailVerificationLastSentAt && Date.now()-user.emailVerificationLastSentAt<COOLDOWN_MS){
+    return next(new AppError("Please wait 1 minute before requesting another verification email.",429))
+   }
+
    const token=user.generateEmailVerificationToken();
+   user.emailVerificationLastSentAt=Date.now();
+
    await user.save({validateBeforeSave:false});
     
    const verificationURL=`${req.protocol}://${req.get("host")}/api/v1/auth/verify-email/${token}`;
@@ -65,7 +97,8 @@ export const resendVerificationEmail=catchAsync(async(req,res,next)=>{
     res.status(200).json({
         message:"Verification email sent successfully"
     });
-    })
+    });
+
 
 export const verifyEmail=catchAsync(async(req,res,next)=>{
     const token=req.params.token;
@@ -111,7 +144,7 @@ export const login=catchAsync(async(req,res,next)=>{
         return next(new AppError("Both email and password are required",400));
     }
 
-    const user=await User.findOne({email}).select("+passwordHash +refreshToken");
+    const user=await User.findOne({email}).select("+passwordHash");
 
     if(!user || !(await user.comparePassword(password))){
         return next(new AppError("Invalid email or password",401));
@@ -125,27 +158,44 @@ export const login=catchAsync(async(req,res,next)=>{
         return next(new AppError("Please log in using Google",400));
     }
 
+    user.refreshTokens=user.refreshTokens || [];
+
+    if(user.refreshTokens.length>=MAX_DEVICE){
+        user.refreshTokens.sort(
+            (token1,token2)=>new Date(token1.createdAt)-new Date(token2.createdAt)
+        )
+        user.refreshTokens.shift();
+    }
+
     const accessToken=generateAccessToken(user);
     const refreshToken=generateRefreshToken();
 
-    user.refreshToken=refreshToken;
+    user.refreshTokens.push({
+        token:refreshToken,
+        createdAt:new Date(),
+        userAgent:req.headers["user-agent"],
+    })
     await user.save({validateBeforeSave:false});
 
-
-
-    res.status(200).json({
+    res
+    .cookie("refeshToken",refreshToken,{
+        httpOnly:true,
+        secure:process.env.NODE_ENV==="production",
+        sameSite:"strict",
+        path:"/api/v1/auth"
+    })
+    .status(200).json({
         status:"success",
         accessToken,
-        refreshToken,
             user:{
                 id:user._id,
                 email:user.email,
                 role:user.role
             }
-        
     });
 
 })
+
 
 export const forgotPassword=catchAsync(async(req,res,next)=>{
     const {email}=req.body;
@@ -176,7 +226,7 @@ export const forgotPassword=catchAsync(async(req,res,next)=>{
 
 
 export const resetPassword=catchAsync(async(req,res,next)=>{
-    const {token}=req.params;
+    const token=req.params.token;
     const {password}=req.body;
 
     if(!password){
@@ -270,11 +320,20 @@ export const googleAuth=catchAsync(async(req,res,next)=>{
 
 
 export const logout=catchAsync(async(req,res,next)=>{
+    const token=req.cookies.refreshToken;
+
+    if(!token){
+        return res.status(200).json({
+            message:"Logged out successfully"
+        });
+    }
     const user=req.user;
 
-    user.refreshToken=undefined;
+    user.refreshTokens=user.refreshTokens.filter(refreshToken=>refreshToken.token!==token);
 
     await user.save({validateBeforeSave:false});
+
+    res.clearCookie("refreshToken",{path:"/api/v1/auth"})
 
     res.status(200).json({
         message:"Logged out successfully"
@@ -283,26 +342,38 @@ export const logout=catchAsync(async(req,res,next)=>{
 
 
 export const refreshAccessToken=catchAsync(async(req,res,next)=>{
-    const {refreshToken}=req.body;
+    const oldRefreshToken=req.cookies.refreshToken;
 
-    if(!refreshToken){
+    if(!oldRefreshToken){
         return next(new AppError("Refresh token required",401));
     }
-    const user=await User.findOne({refreshToken}).select("+refreshToken");
+  
+    const user=await User.findOne({"refreshTokens.token":oldRefreshToken});
 
     if(!user){
         return next(new AppError("Invalid refresh token",401));
     }
 
+    const tokendetails=user.refreshTokens.find(
+        rt=>rt.token===oldRefreshToken
+    );
+
     const newAccessToken=generateAccessToken(user);
     const newRefreshToken=generateRefreshToken();
 
-    user.refreshToken=newRefreshToken;
+    tokendetails.token=newRefreshToken;
+    tokendetails.createdAt=new Date();
     await user.save({validateBeforeSave:false});
+
+    res.cookie("refreshToken",newRefreshToken,{
+        httpOnly:true,
+        secure:process.env.NODE_ENV==="production",
+        sameSite:"strict",
+        path:"/api/v1/auth"
+    })
 
     res.status(200).json({
         accessToken:newAccessToken,
-        refreshToken:newRefreshToken
     });
 });
 

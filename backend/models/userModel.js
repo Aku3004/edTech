@@ -43,15 +43,18 @@ const userSchema= new mongoose.Schema({
         enum:["student","educator","admin"],
         default:"student"
      },
-     refreshToken:{
-        type:String,
-        select:false
-     },
+     refreshTokens:[
+      {
+        token:String,
+        createdAt:Date,
+        userAgent:String,
+     }
+   ],
      emailVerificationToken:String,
      emailVerificationExpiry: Date,
+     emailVerificationLastSentAt:Date,
      passwordResetToken:String,
      passwordResetExpiry:Date
-
 },
 {
     timestamps:true,

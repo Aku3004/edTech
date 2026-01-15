@@ -3,10 +3,6 @@ import User from "../models/userModel.js";
 import APPError from "../utils/appError.js";
 import catchAsync from "../utils/asyncHandler.js";
 
-
-
-
-
 export const protect= catchAsync(async(req,res,next)=>{
          let token;
 
