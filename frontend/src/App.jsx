@@ -1,21 +1,25 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
-import { Button } from "@/components/ui/button"
-import Signup from './pages/Signup'
+import { useState } from "react";
+import "./App.css";
+import { Routes, Route, Navigate } from "react-router-dom";
+import Signup from "./pages/Signup";
+import Layout from "./pages/Layout";
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [count, setCount] = useState(0);
 
   return (
     <>
-    <div className="flex min-h-svh flex-col items-center justify-center">
-      <Signup />
-    </div>
-
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Landing/>} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/login" element={<Login />} />
+        </Route>
+      </Routes>
     </>
-  )
+  );
 }
 
-export default App
+export default App;
